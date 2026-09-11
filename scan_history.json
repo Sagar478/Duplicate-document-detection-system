@@ -1,0 +1,34 @@
+[
+  {
+    "date": "2026-09-11 13:13",
+    "folder": "C:\\Users\\sagar\\OneDrive\\Documents\\messy",
+    "files_scanned": 45,
+    "exact_duplicate_groups": 8,
+    "near_duplicate_pairs": 11,
+    "potential_savings_kb": 16010.5
+  },
+  {
+    "date": "2026-09-11 13:09",
+    "folder": "C:\\Users\\sagar\\OneDrive\\Documents\\messy",
+    "files_scanned": 45,
+    "exact_duplicate_groups": 8,
+    "near_duplicate_pairs": 11,
+    "potential_savings_kb": 16010.5
+  },
+  {
+    "date": "2026-09-11 12:57",
+    "folder": "C:\\Users\\sagar\\OneDrive\\Documents\\messy",
+    "files_scanned": 45,
+    "exact_duplicate_groups": 8,
+    "near_duplicate_pairs": 11,
+    "potential_savings_kb": 16010.5
+  },
+  {
+    "date": "2026-09-11 12:50",
+    "folder": "C:\\Users\\sagar\\OneDrive\\Documents\\messy",
+    "files_scanned": 45,
+    "exact_duplicate_groups": 8,
+    "near_duplicate_pairs": 11,
+    "potential_savings_kb": 16010.5
+  }
+]
