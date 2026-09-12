@@ -10,6 +10,7 @@ from image_similarity import find_near_duplicate_images, HASH_DIFFERENCE_THRESHO
 from video_similarity import find_near_duplicate_videos, is_video_file, VIDEO_EXTENSIONS
 from version_recommender import group_related_files, recommend_latest_version
 from text_extractor import extract_text, is_text_file
+from google_drive_connector import sync_drive_folder_to_local
 
 st.set_page_config(page_title="DocDetect", page_icon="📄", layout="wide")
 
@@ -216,7 +217,7 @@ def render_sidebar():
 
         st.markdown(
             '<div class="local-note"><b>LOCAL ANALYSIS</b><br>● Active<br>'
-            'Files remain on this device.</div>'
+            'Files remain on this device. Google Drive files are downloaded locally before analysis.</div>'
             '<div class="version-footer">v1.0 — FYP Prototype</div>',
             unsafe_allow_html=True
         )
@@ -362,12 +363,31 @@ def page_overview():
 
 
 def page_scan():
-    render_page_header("Scan Folder", "Analyse a local folder for duplicate and related documents.")
+    render_page_header("Scan Folder", "Analyse a local folder or a Google Drive folder for duplicate and related documents.")
 
     with st.container(border=True):
         st.markdown("**Start a Folder Analysis**")
-        st.caption("Select a folder containing your documents to identify duplicates and related document versions.")
-        folder = st.text_input("Selected folder path", value=st.session_state.scan_folder)
+        source = st.radio("Source", ["Local folder", "Google Drive folder"], horizontal=True)
+
+        if source == "Local folder":
+            st.caption("Select a folder containing your documents to identify duplicates and related document versions.")
+            folder = st.text_input("Selected folder path", value=st.session_state.scan_folder)
+        else:
+            st.caption(
+                "Paste the folder ID from its Google Drive URL "
+                "(the part after /folders/ in the address bar). "
+                "Files will be downloaded locally before analysis, since detection runs on local files."
+            )
+            drive_folder_id = st.text_input("Google Drive folder ID", value="")
+            folder = os.path.join(os.getcwd(), "drive_downloads")
+
+            if drive_folder_id and st.button("⬇ Connect and download from Drive"):
+                with st.spinner("Connecting to Google Drive and downloading files..."):
+                    try:
+                        downloaded = sync_drive_folder_to_local(drive_folder_id, folder)
+                        st.success(f"Downloaded {len(downloaded)} file(s) from Google Drive to a local folder.")
+                    except Exception as e:
+                        st.error(f"Could not connect to Google Drive: {e}")
 
         if os.path.exists(folder):
             preview_files = [os.path.join(r, f) for r, d, fs in os.walk(folder) for f in fs]
@@ -777,6 +797,7 @@ def page_settings():
     st.write("**Supported image types:** JPG, PNG, BMP, GIF")
     st.write("**Supported video types:** MP4, AVI, MOV, MKV, WMV (compared via sampled-frame perceptual hashing)")
     st.write("**Version recommendation:** rule-based — modification date and content length")
+    st.write("**Cloud connectivity:** Google Drive folders can be connected and downloaded locally before analysis")
 
     st.markdown('<p class="section-title">System Information</p>', unsafe_allow_html=True)
     st.write(f"**Python version:** {sys.version.split()[0]}")
@@ -785,8 +806,9 @@ def page_settings():
 
     st.markdown('<p class="section-title">Privacy</p>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="finding-card">Files are analysed locally on this device. '
-        'Nothing is uploaded to a cloud server.</div>', unsafe_allow_html=True
+        '<div class="finding-card">Files are analysed locally on this device. Google Drive files are '
+        'downloaded to this device via an authenticated, read-only connection before analysis, and '
+        'nothing is uploaded to a server controlled by this application.</div>', unsafe_allow_html=True
     )
 
 

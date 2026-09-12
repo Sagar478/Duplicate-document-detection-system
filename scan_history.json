@@ -1,5 +1,21 @@
 [
   {
+    "date": "2026-09-12 22:24",
+    "folder": "C:\\Users\\sagar\\OneDrive\\Desktop\\Final year Project\\Duplicate document detection system\\drive_downloads",
+    "files_scanned": 51,
+    "exact_duplicate_groups": 9,
+    "near_duplicate_pairs": 13,
+    "potential_savings_kb": 16101.0
+  },
+  {
+    "date": "2026-09-12 08:39",
+    "folder": "C:\\Users\\sagar\\OneDrive\\Documents\\messy",
+    "files_scanned": 51,
+    "exact_duplicate_groups": 9,
+    "near_duplicate_pairs": 13,
+    "potential_savings_kb": 16100.9
+  },
+  {
     "date": "2026-09-11 13:47",
     "folder": "C:\\Users\\sagar\\OneDrive\\Documents\\messy",
     "files_scanned": 51,
