@@ -1,5 +1,5 @@
 import streamlit as st
-import os, sys, json, time, shutil, html, difflib
+import os, sys, json, time, shutil, html, difflib, subprocess
 from collections import defaultdict
 from itertools import combinations
 import pandas as pd
@@ -700,6 +700,40 @@ def render_file_details(path, ctx):
                 st.caption("Video preview is available on the Videos page.")
 
 
+def browse_folder():
+    """Open the normal Windows folder picker on this computer and return the chosen path ('' if cancelled)."""
+    code = ("import tkinter as tk\nfrom tkinter import filedialog\n"
+            "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
+            "print(filedialog.askdirectory(title='Select the folder to scan'))")
+    try:
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+        path = out.stdout.strip()
+        return os.path.normpath(path) if path else ""
+    except Exception:
+        return ""
+
+
+def pick_folder(key):
+    path = browse_folder()
+    if path:
+        st.session_state[key] = path
+
+
+def folder_picker(key, default):
+    """A folder path box with a Browse button next to it."""
+    if key not in st.session_state:
+        st.session_state[key] = default
+    try:
+        c1, c2 = st.columns([6, 1.4], vertical_alignment="bottom")
+    except TypeError:
+        c1, c2 = st.columns([6, 1.4])
+    with c1:
+        folder = st.text_input("Selected folder path", key=key)
+    with c2:
+        st.button("📂  Browse…", key=f"browse_{key}", on_click=pick_folder, args=(key,), help="Choose the folder in a window instead of typing the path")
+    return folder
+
+
 # ---------------------------------------------------------------------------
 # PAGES
 # ---------------------------------------------------------------------------
@@ -837,18 +871,15 @@ def page_overview():
 
 
 def page_scan():
-    render_page_header("Scan Folder", "Analyse a local folder, Outlook storage, or a Google Drive folder for duplicate and related documents.")
+    render_page_header("Scan Folder", "Analyse a local or OneDrive folder, or a Google Drive folder, for duplicate and related documents.")
 
     with card("scan_main"):
         st.markdown("**Start a Folder Analysis**")
-        source = st.radio("Source", ["Local folder", "Outlook Storage", "Google Drive folder"], horizontal=True)
+        source = st.radio("Source", ["Local folder", "Google Drive folder"], horizontal=True)
 
         if source == "Local folder":
             st.caption("Select a folder containing your documents to identify duplicates and related document versions. This also covers OneDrive folders, since OneDrive syncs to a normal local folder.")
-            folder = st.text_input("Selected folder path", value=st.session_state.scan_folder)
-        elif source == "Outlook Storage":
-            st.caption("Outlook shares the same Microsoft cloud storage backend as OneDrive, so its synced files appear as a normal local folder. Point this at your Outlook attachments/files folder.")
-            folder = st.text_input("Selected folder path", value=os.path.join(os.path.expanduser("~"), "OneDrive", "Outlook Files"), key="outlook_folder_path")
+            folder = folder_picker("scan_path_local", st.session_state.scan_folder)
         else:
             st.caption(
                 "Paste the folder ID from its Google Drive URL "
@@ -874,20 +905,43 @@ def page_scan():
                 if choice != "Everyone (all contributors)":
                     owner_filter = choice.split("(")[-1].rstrip(")")
 
+            lim1, lim2 = st.columns([1, 1])
+            use_limit = lim1.checkbox("Skip files larger than a size limit", value=False,
+                                      help="Useful for demos: very large files (e.g. a multi-GB video) are not downloaded.")
+            limit_mb = lim2.number_input("Size limit (MB)", min_value=1, value=500, step=50, disabled=not use_limit)
+
             if drive_folder_id and st.button("⬇ Connect and download from Drive"):
-                with st.spinner("Connecting to Google Drive and downloading files..."):
-                    try:
-                        downloaded = sync_drive_folder_to_local(drive_folder_id, folder, owner_email_filter=owner_filter)
-                        st.session_state.scanned = False
-                        st.session_state.all_files = []
-                        st.session_state.exact_groups = []
-                        st.session_state.text_pairs = []
-                        st.session_state.image_pairs = []
-                        st.session_state.video_pairs = []
-                        who = owner_filter if owner_filter else "all contributors"
-                        st.success(f"Downloaded {len(downloaded)} file(s) from {who}. Click START ANALYSIS to scan them.")
-                    except Exception as e:
-                        st.error(f"Could not connect to Google Drive: {e}")
+                import time as _t
+                import google_drive_connector as _gdc
+                bar = st.progress(0.0, text="Connecting to Google Drive...")
+                t0 = _t.time()
+
+                def _progress(i, total, name, frac):
+                    overall = (i + frac) / max(total, 1)
+                    bar.progress(min(overall, 1.0), text=f"Downloading file {i + 1} of {total}: {name} ({frac * 100:.0f}%)")
+
+                try:
+                    downloaded = sync_drive_folder_to_local(
+                        drive_folder_id, folder, owner_email_filter=owner_filter,
+                        max_size_mb=int(limit_mb) if use_limit else None,
+                        progress_callback=_progress)
+                    bar.progress(1.0, text="Download complete")
+                    st.session_state.scanned = False
+                    st.session_state.all_files = []
+                    st.session_state.exact_groups = []
+                    st.session_state.text_pairs = []
+                    st.session_state.image_pairs = []
+                    st.session_state.video_pairs = []
+                    who = owner_filter if owner_filter else "all contributors"
+                    secs = _t.time() - t0
+                    st.success(f"Downloaded {len(downloaded)} file(s) from {who} in {secs:.1f} s. Click START ANALYSIS to scan them.")
+                    skipped = getattr(_gdc, "LAST_SKIPPED", [])
+                    if skipped:
+                        st.warning("Skipped (larger than the limit): " + ", ".join(
+                            f"{n} ({sz / 1024 / 1024:.0f} MB)" for n, sz in skipped))
+                except Exception as e:
+                    bar.empty()
+                    st.error(f"Could not connect to Google Drive: {e}")
 
         if os.path.isdir(folder):
             preview_files = [os.path.join(r, f) for r, d, fs in os.walk(folder) for f in fs]
@@ -971,14 +1025,14 @@ def page_storage_comparison():
     if "storage_comparison" not in st.session_state:
         st.session_state["storage_comparison"] = {}
 
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b = st.columns(2)
 
     def scan_column(col, key, default_label, default_path, help_text):
         with col:
             with card(f"cmp_{key}"):
                 st.markdown(f"**{default_label}**")
                 st.caption(help_text)
-                folder = st.text_input("Folder path", value=default_path, key=f"cmp_folder_{key}")
+                folder = folder_picker(f"cmp_folder_{key}", default_path)
                 if st.button(f"▶ Scan {default_label}", key=f"scan_{key}"):
                     if not os.path.exists(folder):
                         st.error("Folder not found.")
@@ -997,11 +1051,6 @@ def page_storage_comparison():
     scan_column(
         col_b, "B", "Google Drive", os.path.join(os.getcwd(), "drive_downloads"),
         "Uses already-downloaded Drive files. Run 'Connect and download' on the Scan Folder page first."
-    )
-    scan_column(
-        col_c, "C", "Outlook Storage", os.path.join(os.path.expanduser("~"), "OneDrive", "Outlook Files"),
-        "Outlook shares the same Microsoft cloud storage backend as OneDrive, so its synced files also "
-        "appear as a normal local folder. Point this at your Outlook attachments/files folder."
     )
 
     results = st.session_state["storage_comparison"]
@@ -1727,7 +1776,7 @@ def page_settings():
         st.write("**Supported image types:** JPG, PNG, BMP, GIF")
         st.write("**Supported video types:** MP4, AVI, MOV, MKV, WMV (compared via sampled-frame perceptual hashing)")
         st.write("**Version recommendation:** rule-based — modification date and content length")
-        st.write("**Cloud connectivity:** Google Drive folders can be connected and downloaded locally before analysis, with an option to filter by uploader when a folder has multiple contributors. OneDrive and Outlook storage are supported natively via local folder scanning, since both share Microsoft's cloud storage backend. Google Cloud Storage was evaluated but not integrated, due to a mandatory billing account requirement.")
+        st.write("**Cloud connectivity:** Google Drive folders can be connected and downloaded locally before analysis, with an option to filter by uploader when a folder has multiple contributors. OneDrive is supported natively via local folder scanning, since OneDrive syncs to a normal local folder. Google Cloud Storage was evaluated but not integrated, due to a mandatory billing account requirement.")
 
     with card("set_system"):
         card_title("System information")
