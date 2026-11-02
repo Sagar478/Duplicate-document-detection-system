@@ -3,3 +3,4 @@ token.json
 __pycache__/
 *.pyc
 drive_downloads/
+scan_history.json
