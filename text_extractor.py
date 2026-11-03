@@ -30,6 +30,7 @@ def extract_text_from_pdf(filepath):
             text = page.extract_text()
             if text:
                 full_text.append(text)
+            page.close()   # free the page's layout data; without this a 200-page PDF used about 630 MB of memory
     return "\n".join(full_text)
 
 
