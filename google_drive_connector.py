@@ -4,12 +4,15 @@ import os
 import re
 import shutil
 import stat
+import tempfile
+import threading
+import time
 from datetime import datetime
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import Flow, InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
@@ -97,8 +100,8 @@ def list_files_in_folder(service, folder_id):
     return results
 
 
-def list_owners_in_folder(folder_id):
-    service = get_drive_service()
+def list_owners_in_folder(folder_id, service=None):
+    service = service or get_drive_service()
     files = list_files_in_folder(service, extract_folder_id(folder_id))
     owners = {}
     for f in files:
@@ -209,3 +212,98 @@ def sync_drive_folder_to_local(folder_id, local_download_dir, owner_email_filter
         _set_modified_time(local_path, f.get("modifiedTime"))
         downloaded_paths.append(local_path)
     return downloaded_paths
+
+
+# ---------------------------------------------------------------------------
+# Online (deployed) mode: every visitor signs in with their own Google account through the web OAuth flow.
+# Nothing is written to disk: the access token lives only in the visitor's Streamlit session, and downloads go to a
+# private temporary folder that is deleted on request or after SESSION_MAX_AGE_HOURS.
+# ---------------------------------------------------------------------------
+SESSION_PREFIX = "docdetect_session_"
+SESSION_MAX_AGE_HOURS = 2
+_PENDING = {}                 # state -> (flow, created) for sign-ins that have started but not finished
+_PENDING_LOCK = threading.Lock()
+_PENDING_TTL_SECONDS = 15 * 60
+_PENDING_MAX = 200
+
+
+def is_online():
+    """True when DocDetect runs as a hosted app (DOCDETECT_ONLINE=1) and not on the user's own computer."""
+    return os.environ.get("DOCDETECT_ONLINE", "").strip().lower() in ("1", "true", "yes")
+
+
+def max_online_download_mb():
+    try:
+        return max(1, int(os.environ.get("DOCDETECT_MAX_DOWNLOAD_MB", "200")))
+    except ValueError:
+        return 200
+
+
+def web_login_configured():
+    return all(os.environ.get(k) for k in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "DOCDETECT_REDIRECT_URI"))
+
+
+def _web_flow():
+    redirect = os.environ["DOCDETECT_REDIRECT_URI"].strip()
+    config = {"web": {
+        "client_id": os.environ["GOOGLE_CLIENT_ID"].strip(),
+        "client_secret": os.environ["GOOGLE_CLIENT_SECRET"].strip(),
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": [redirect],
+    }}
+    return Flow.from_client_config(config, scopes=SCOPES, redirect_uri=redirect)
+
+
+def start_web_login():
+    """Return the Google sign-in address for one visitor. The flow is kept until Google redirects back."""
+    if not web_login_configured():
+        raise RuntimeError("Google sign-in is not configured on this server "
+                           "(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and DOCDETECT_REDIRECT_URI must be set).")
+    flow = _web_flow()
+    url, state = flow.authorization_url(access_type="online", prompt="select_account")
+    now = time.time()
+    with _PENDING_LOCK:
+        for key in [k for k, (_, created) in _PENDING.items() if now - created > _PENDING_TTL_SECONDS]:
+            del _PENDING[key]
+        while len(_PENDING) >= _PENDING_MAX:
+            del _PENDING[min(_PENDING, key=lambda k: _PENDING[k][1])]
+        _PENDING[state] = (flow, now)
+    return url
+
+
+def finish_web_login(code, state):
+    """Exchange the code that Google sent back for credentials. A state value can be used only once."""
+    os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+    with _PENDING_LOCK:
+        item = _PENDING.pop(state, None)
+    if item is None or time.time() - item[1] > _PENDING_TTL_SECONDS:
+        raise ValueError("The sign-in link expired or was already used. Please sign in again.")
+    flow = item[0]
+    flow.fetch_token(code=code)
+    return flow.credentials
+
+
+def service_from_credentials(creds):
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def cleanup_old_session_dirs(max_age_hours=SESSION_MAX_AGE_HOURS):
+    """Remove temporary download folders left behind by sessions that ended without deleting them."""
+    root = tempfile.gettempdir()
+    cutoff = time.time() - max_age_hours * 3600
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if name.startswith(SESSION_PREFIX) and os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+            shutil.rmtree(path, onerror=_force_remove_readonly)
+
+
+def new_session_dir():
+    cleanup_old_session_dirs()
+    return tempfile.mkdtemp(prefix=SESSION_PREFIX)
+
+
+def delete_session_dir(path):
+    """Delete a session folder created by new_session_dir (and nothing else)."""
+    if path and os.path.basename(os.path.normpath(path)).startswith(SESSION_PREFIX) and os.path.isdir(path):
+        shutil.rmtree(path, onerror=_force_remove_readonly)

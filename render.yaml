@@ -1,0 +1,21 @@
+# Render blueprint for the online demo of DocDetect. Secrets are NOT stored here: set them in the Render dashboard.
+services:
+  - type: web
+    name: docdetect
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DOCDETECT_ONLINE
+        value: "1"
+      - key: DOCDETECT_MAX_DOWNLOAD_MB
+        value: "100"
+      - key: DOCDETECT_REDIRECT_URI      # e.g. https://docdetect.onrender.com  (exactly the address of the app, no trailing slash)
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false

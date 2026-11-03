@@ -14,7 +14,10 @@ from scanner import run_scan
 from file_utils import list_files, REVIEW_FOLDER_NAME
 from version_recommender import group_related_files, recommend_latest_version
 from text_extractor import extract_text, is_text_file
-from google_drive_connector import sync_drive_folder_to_local, list_owners_in_folder, extract_folder_id
+from google_drive_connector import (sync_drive_folder_to_local, list_owners_in_folder, extract_folder_id, is_online,
+                                    max_online_download_mb, web_login_configured, start_web_login, finish_web_login,
+                                    service_from_credentials, new_session_dir, delete_session_dir)
+ONLINE = is_online()   # True when DocDetect is deployed as a hosted app (each visitor signs in with their own Google account)
 
 st.set_page_config(page_title="DocDetect", page_icon="📄", layout="wide")
 
@@ -182,6 +185,9 @@ defaults = {
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+if ONLINE and "drive_dir" not in st.session_state:
+    st.session_state["drive_dir"] = new_session_dir()      # private temporary folder for this visitor
+    st.session_state.scan_folder = st.session_state["drive_dir"]
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +304,8 @@ def classify_size(size_kb):
 
 
 def load_history():
+    if ONLINE:                                    # hosted: history lives only in this visitor's session
+        return list(st.session_state.get("scan_history", []))
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r") as f:
@@ -308,6 +316,9 @@ def load_history():
 
 
 def save_history(history):
+    if ONLINE:
+        st.session_state["scan_history"] = history
+        return
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
@@ -474,13 +485,14 @@ def render_scan_notices():
 
 
 def render_topbar():
-    st.markdown("""
+    status = "Online demo" if ONLINE else "Local Analysis"
+    st.markdown(f"""
     <div class="topbar-brand">
         <div class="logo">📄</div>
         <div><div class="name">DOCDETECT</div><div class="tag">Duplicate Document Intelligence</div></div>
     </div>
     <div style="text-align:center; margin-top:8px;">
-        <span class="topbar-status">● System Ready — Local Analysis</span>
+        <span class="topbar-status">● System Ready — {status}</span>
     </div>
     """, unsafe_allow_html=True)
     st.markdown('<div style="border-bottom:1px solid #E4E7EC; margin: 16px 0 18px 0;"></div>', unsafe_allow_html=True)
@@ -516,9 +528,13 @@ def render_sidebar():
         st.markdown('<p class="sidebar-section">SYSTEM</p>', unsafe_allow_html=True)
         nav_btn("Settings", "⚙", "Settings")
 
+        note = ('<b>ONLINE DEMO</b><br>● Active<br>Your Drive files are read with read-only access, copied to a private '
+                'temporary folder for analysis, and deleted when you click Delete or after 2 hours.'
+                if ONLINE else
+                '<b>LOCAL ANALYSIS</b><br>● Active<br>'
+                'Files remain on this device. Google Drive files are downloaded locally before analysis.')
         st.markdown(
-            '<div class="local-note"><b>LOCAL ANALYSIS</b><br>● Active<br>'
-            'Files remain on this device. Google Drive files are downloaded locally before analysis.</div>'
+            f'<div class="local-note">{note}</div>'
             '<div class="version-footer">v2.0 — FYP Prototype</div>',
             unsafe_allow_html=True
         )
@@ -872,12 +888,66 @@ def page_overview():
                 st.button("Review on Optimization page →", key="ov_to_opt", on_click=go_to, args=("Optimization",))
 
 
+def handle_login_callback():
+    """Google redirects back to the app with ?code=...&state=...; finish the sign-in and return to the Scan page."""
+    qp = st.query_params
+    if "code" not in qp and "error" not in qp:
+        return
+    code, state = qp.get("code"), qp.get("state")
+    error = qp.get("error")
+    st.query_params.clear()
+    st.session_state.page = "Scan Folder"
+    if error:
+        st.session_state["login_error"] = f"Google sign-in was cancelled or refused ({error})."
+        return
+    try:
+        st.session_state["drive_creds"] = finish_web_login(code, state)
+        st.session_state.pop("login_error", None)
+        st.session_state.pop("login_url", None)
+    except Exception as e:
+        st.session_state["login_error"] = f"Sign-in failed: {e}"
+
+
+def online_drive_ui():
+    """Online mode: show the sign-in step. Returns a Drive service once the visitor has signed in, else None."""
+    creds = st.session_state.get("drive_creds")
+    if creds is not None and getattr(creds, "valid", False):
+        c1, c2 = st.columns([3, 1], vertical_alignment="center")
+        c1.success("Signed in to Google (read-only). Your files are analysed on this server and are not kept.")
+        if c2.button("Delete my files and sign out"):
+            delete_session_dir(st.session_state.get("drive_dir"))
+            for key in ("drive_creds", "login_url", "drive_owners", "scan_history"):
+                st.session_state.pop(key, None)
+            st.session_state["drive_dir"] = new_session_dir()
+            st.session_state.update({"scanned": False, "all_files": [], "exact_groups": [], "text_pairs": [],
+                                     "image_pairs": [], "video_pairs": [], "scan_folder": st.session_state["drive_dir"]})
+            st.rerun()
+        return service_from_credentials(creds)
+    if creds is not None:
+        st.session_state.pop("drive_creds", None)       # the access token has expired: ask for a new sign-in
+        st.warning("Your Google sign-in has expired. Please sign in again.")
+    st.info("Sign in with your own Google account to scan a folder from your Drive. DocDetect asks only for read-only "
+            "access, copies the files you choose to a private temporary folder on this server for analysis, and "
+            "deletes them when you click Delete or after 2 hours. Please use a folder of test files, not private documents.")
+    if st.session_state.get("login_error"):
+        st.error(st.session_state["login_error"])
+    if not web_login_configured():
+        st.error("Google sign-in is not configured on this server.")
+        return None
+    if "login_url" not in st.session_state:
+        st.session_state["login_url"] = start_web_login()
+    st.link_button("Sign in with Google", st.session_state["login_url"], type="primary")
+    st.caption("If Google says the app is not verified, choose Advanced and continue; the app is a university project.")
+    return None
+
+
 def page_scan():
     render_page_header("Scan Folder", "Analyse a local or OneDrive folder, or a Google Drive folder, for duplicate and related documents.")
 
     with card("scan_main"):
         st.markdown("**Start a Folder Analysis**")
-        source = st.radio("Source", ["Local folder", "Google Drive folder"], horizontal=True)
+        source = "Google Drive folder" if ONLINE else st.radio("Source", ["Local folder", "Google Drive folder"], horizontal=True)
+        drive_service = online_drive_ui() if ONLINE else None
 
         if source == "Local folder":
             st.caption("Select a folder containing your documents to identify duplicates and related document versions. This also covers OneDrive folders, since OneDrive syncs to a normal local folder.")
@@ -889,13 +959,14 @@ def page_scan():
                 "Files will be downloaded locally before analysis, since detection runs on local files."
             )
             drive_folder_id = extract_folder_id(st.text_input("Google Drive folder ID or link", value=""))
-            folder = os.path.join(os.getcwd(), "drive_downloads")
+            folder = st.session_state["drive_dir"] if ONLINE else os.path.join(os.getcwd(), "drive_downloads")
             owner_filter = None
+            can_connect = bool(drive_folder_id) and (not ONLINE or drive_service is not None)
 
-            if drive_folder_id and st.button("🔎 Check who uploaded files in this folder"):
+            if can_connect and st.button("🔎 Check who uploaded files in this folder"):
                 with st.spinner("Checking file owners..."):
                     try:
-                        owners = list_owners_in_folder(drive_folder_id)
+                        owners = list_owners_in_folder(drive_folder_id, service=drive_service)
                         st.session_state["drive_owners"] = owners
                     except Exception as e:
                         st.error(f"Could not read this folder: {e}")
@@ -908,11 +979,16 @@ def page_scan():
                     owner_filter = choice.split("(")[-1].rstrip(")")
 
             lim1, lim2 = st.columns([1, 1])
-            use_limit = lim1.checkbox("Skip files larger than a size limit", value=False,
-                                      help="Useful for demos: very large files (e.g. a multi-GB video) are not downloaded.")
-            limit_mb = lim2.number_input("Size limit (MB)", min_value=1, value=500, step=50, disabled=not use_limit)
+            if ONLINE:
+                cap_mb = max_online_download_mb()
+                lim1.markdown(f"Files larger than **{cap_mb} MB** are skipped on this server.")
+                use_limit, limit_mb = True, cap_mb
+            else:
+                use_limit = lim1.checkbox("Skip files larger than a size limit", value=False,
+                                          help="Useful for demos: very large files (e.g. a multi-GB video) are not downloaded.")
+                limit_mb = lim2.number_input("Size limit (MB)", min_value=1, value=500, step=50, disabled=not use_limit)
 
-            if drive_folder_id and st.button("⬇ Connect and download from Drive"):
+            if can_connect and st.button("⬇ Download from Drive" if ONLINE else "⬇ Connect and download from Drive"):
                 import time as _t
                 import google_drive_connector as _gdc
                 bar = st.progress(0.0, text="Connecting to Google Drive...")
@@ -926,7 +1002,7 @@ def page_scan():
                     downloaded = sync_drive_folder_to_local(
                         drive_folder_id, folder, owner_email_filter=owner_filter,
                         max_size_mb=int(limit_mb) if use_limit else None,
-                        progress_callback=_progress)
+                        progress_callback=_progress, service=drive_service)
                     bar.progress(1.0, text="Download complete")
                     st.session_state.scanned = False
                     st.session_state.all_files = []
@@ -1008,6 +1084,10 @@ def page_scan():
 
 def page_storage_comparison():
     render_page_header("Storage Comparison", "Run the same analysis on different storage sources and compare results side by side.")
+    if ONLINE:
+        st.info("Storage Comparison compares a local folder with a Google Drive download, so it is available only in the "
+                "locally run version of DocDetect. Use the Scan Folder page here.")
+        return
 
     if "storage_comparison" not in st.session_state:
         st.session_state["storage_comparison"] = {}
@@ -1776,16 +1856,21 @@ def page_settings():
 
     with card("set_privacy"):
         card_title("Privacy")
-        st.markdown(
-            '<div class="finding-card" style="margin:0">Files are analysed locally on this device. Google Drive files are '
-            'downloaded to this device via an authenticated, read-only connection before analysis, and '
-            'nothing is uploaded to a server controlled by this application.</div>', unsafe_allow_html=True
-        )
+        privacy = ('Online demo: you sign in with your own Google account and DocDetect asks for read-only access. The files '
+                   'you choose are copied to a private temporary folder on the server for analysis and deleted when you '
+                   'click Delete or after 2 hours. No sign-in token or scan history is saved to disk.'
+                   if ONLINE else
+                   'Files are analysed locally on this device. Google Drive files are downloaded to this device via an '
+                   'authenticated, read-only connection before analysis, and nothing is uploaded to a server controlled '
+                   'by this application.')
+        st.markdown(f'<div class="finding-card" style="margin:0">{privacy}</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
 # ROUTING
 # ---------------------------------------------------------------------------
+if ONLINE:
+    handle_login_callback()
 render_topbar()
 render_sidebar()
 
