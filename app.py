@@ -6,20 +6,21 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 
-from hasher import find_exact_duplicates, get_file_hash
-from near_duplicate_text import find_near_duplicate_texts, SIMILARITY_THRESHOLD
-from image_similarity import find_near_duplicate_images, HASH_DIFFERENCE_THRESHOLD
-from video_similarity import find_near_duplicate_videos, is_video_file, VIDEO_EXTENSIONS
+from hasher import get_file_hash
+from near_duplicate_text import SIMILARITY_THRESHOLD
+from image_similarity import HASH_DIFFERENCE_THRESHOLD
+from video_similarity import is_video_file, VIDEO_EXTENSIONS, FRAMES_PER_VIDEO, FRAME_HASH_THRESHOLD, MATCH_FRACTION_REQUIRED
+from scanner import run_scan
+from file_utils import list_files, REVIEW_FOLDER_NAME
 from version_recommender import group_related_files, recommend_latest_version
 from text_extractor import extract_text, is_text_file
-from google_drive_connector import sync_drive_folder_to_local, list_owners_in_folder
+from google_drive_connector import sync_drive_folder_to_local, list_owners_in_folder, extract_folder_id
 
 st.set_page_config(page_title="DocDetect", page_icon="📄", layout="wide")
 
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".gif")
 VIDEO_EXT = (".mp4", ".avi", ".mov", ".mkv", ".wmv")
 HISTORY_FILE = "scan_history.json"
-REVIEW_FOLDER_NAME = "_docdetect_review"
 
 # ---- colour system: navy sidebar, light workspace, orange accent ----------
 NAVY = "#0F172A"
@@ -176,6 +177,7 @@ defaults = {
     "scan_folder": r"C:\Users\sagar\OneDrive\Documents\messy",
     "exact_groups": [], "text_pairs": [], "image_pairs": [], "video_pairs": [],
     "all_files": [], "last_scan_time": None, "benchmark_rows": None,
+    "scan_warnings": [], "empty_files": [], "scan_timings": {},
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -195,6 +197,14 @@ def card(key):
         return st.container(border=True, key=f"card_{key}")
     except TypeError:
         return st.container(border=True)
+
+
+def safe_text(path):
+    """Text of a document, or '' if it cannot be read (the comparison views must never crash on one bad file)."""
+    try:
+        return extract_text(path) or ""
+    except Exception:
+        return ""
 
 
 def esc(text):
@@ -360,6 +370,8 @@ def apply_moved(moved):
     moved = set(moved)
     ss = st.session_state
     ss.all_files = [f for f in ss.all_files if f not in moved]
+    ss.scan_warnings = [w for w in ss.get("scan_warnings", []) if w[0] not in moved]
+    ss.empty_files = [f for f in ss.get("empty_files", []) if f not in moved]
     cleaned = [[f for f in g if f not in moved] for g in ss.exact_groups]
     ss.exact_groups = [g for g in cleaned if len(g) > 1]
     for key in ("text_pairs", "image_pairs", "video_pairs"):
@@ -367,41 +379,15 @@ def apply_moved(moved):
 
 
 def run_full_scan_timed(folder):
-    """Runs the complete detection pipeline on a folder and returns
-    both the results and how long the whole scan took, in seconds."""
-    t0 = time.time()
-    discovered = [os.path.join(r, f) for r, d, fs in os.walk(folder) for f in fs]
-
-    exact_groups = find_exact_duplicates(folder)
-    text_pairs = find_near_duplicate_texts(folder)
-    image_pairs = find_near_duplicate_images(folder)
-    video_pairs = find_near_duplicate_videos(folder)
-
-    elapsed = time.time() - t0
-
-    all_pairs = list(text_pairs) + list(image_pairs) + list(video_pairs)
-    for group in exact_groups:
-        for i in range(len(group) - 1):
-            all_pairs.append((group[i], group[i + 1], 1.0))
-    groups = group_related_files(all_pairs)
-
-    wasted_kb = 0
-    for group in groups:
-        existing = [f for f in group if os.path.exists(f)]
-        if not existing:
-            continue
-        latest = recommend_latest_version(existing)
-        for f in existing:
-            if f != latest:
-                wasted_kb += os.path.getsize(f) / 1024
-
+    """Runs the complete detection pipeline (the same one as the Scan Folder page) and returns its summary."""
+    r = run_scan(folder)
     return {
-        "files_scanned": len(discovered),
-        "exact_groups": len(exact_groups),
-        "near_duplicate_pairs": len(text_pairs) + len(image_pairs) + len(video_pairs),
-        "total_related_groups": len(groups),
-        "potential_savings_kb": round(wasted_kb, 1),
-        "scan_time_seconds": round(elapsed, 3),
+        "files_scanned": len(r.files),
+        "exact_groups": len(r.exact_groups),
+        "near_duplicate_pairs": len(r.near_pairs),
+        "total_related_groups": len(r.groups()),
+        "potential_savings_kb": round(r.wasted_kb(), 1),
+        "scan_time_seconds": r.scan_time,
     }
 
 
@@ -472,6 +458,21 @@ def report_csv_bytes():
 # ---------------------------------------------------------------------------
 # TOP APP BAR + SIDEBAR
 # ---------------------------------------------------------------------------
+def render_scan_notices():
+    """Tell the user about files the scan could not analyse, so nothing is skipped silently."""
+    warnings = st.session_state.get("scan_warnings", [])
+    empty = st.session_state.get("empty_files", [])
+    if not warnings and not empty:
+        return
+    total = len(warnings) + len(empty)
+    with st.expander(f"⚠ {total} file(s) were not fully analysed — click to see why"):
+        for path, message in warnings:
+            st.caption(f"**{os.path.basename(path)}** — {message}")
+        if empty:
+            st.caption(f"**{len(empty)} empty file(s)** (0 bytes) were ignored: " + ", ".join(os.path.basename(p) for p in empty[:10])
+                       + (" …" if len(empty) > 10 else ""))
+
+
 def render_topbar():
     st.markdown("""
     <div class="topbar-brand">
@@ -621,7 +622,7 @@ def render_duplicate_group(group, index, show_hash=False, key_prefix="dg"):
 def render_text_compare(file_a, file_b):
     """Side-by-side text comparison. Lines only in A are red, lines only in B are green."""
     try:
-        ta, tb = extract_text(file_a) or "", extract_text(file_b) or ""
+        ta, tb = safe_text(file_a), safe_text(file_b)
     except Exception as e:
         st.caption(f"Text preview unavailable: {e}")
         return
@@ -691,7 +692,7 @@ def render_file_details(path, ctx):
                     st.caption("(preview unavailable)")
             elif ftype in ("DOCX", "PDF", "TXT"):
                 try:
-                    excerpt = (extract_text(path) or "")[:700]
+                    excerpt = safe_text(path)[:700]
                     st.markdown("**Content preview**")
                     st.caption(excerpt if excerpt.strip() else "No extractable text.")
                 except Exception:
@@ -793,6 +794,7 @@ def page_overview():
                  series=history_series(folder, "potential_savings_kb"), color=GREEN, target="Optimization", target_label="Review savings →")
     if len([r for r in load_history() if r.get("folder") == folder]) < 2:
         st.caption("Trend lines and “vs previous scan” changes appear after this folder has been scanned at least twice.")
+    render_scan_notices()
 
     # ---- row 2: stacked bar by type + donut ----
     st.write("")
@@ -886,7 +888,7 @@ def page_scan():
                 "(the part after /folders/ in the address bar). "
                 "Files will be downloaded locally before analysis, since detection runs on local files."
             )
-            drive_folder_id = st.text_input("Google Drive folder ID", value="")
+            drive_folder_id = extract_folder_id(st.text_input("Google Drive folder ID or link", value=""))
             folder = os.path.join(os.getcwd(), "drive_downloads")
             owner_filter = None
 
@@ -935,6 +937,9 @@ def page_scan():
                     who = owner_filter if owner_filter else "all contributors"
                     secs = _t.time() - t0
                     st.success(f"Downloaded {len(downloaded)} file(s) from {who} in {secs:.1f} s. Click START ANALYSIS to scan them.")
+                    not_downloaded = getattr(_gdc, "LAST_NOT_DOWNLOADED", [])
+                    if not_downloaded:
+                        st.info("Not downloaded: " + "; ".join(f"{n} ({why})" for n, why in not_downloaded))
                     skipped = getattr(_gdc, "LAST_SKIPPED", [])
                     if skipped:
                         st.warning("Skipped (larger than the limit): " + ", ".join(
@@ -944,7 +949,7 @@ def page_scan():
                     st.error(f"Could not connect to Google Drive: {e}")
 
         if os.path.isdir(folder):
-            preview_files = [os.path.join(r, f) for r, d, fs in os.walk(folder) for f in fs]
+            preview_files = list_files(folder)
             st.caption(f"✓ Folder found  ·  Files detected: {len(preview_files)}  ·  Supported types: DOCX, PDF, TXT, JPG, PNG, MP4")
         else:
             st.caption("✗ Folder not found — check the path before starting.")
@@ -962,58 +967,40 @@ def page_scan():
         if not os.path.isdir(folder):
             st.error(f"Folder not found: {folder}")
         else:
-            discovered = [os.path.join(r, f) for r, d, fs in os.walk(folder) for f in fs]
             status_box = st.empty()
             bar = st.progress(0, text="Starting analysis...")
             live_file = st.empty()
+            weights = {"files": (0, 3), "exact": (3, 35), "text": (35, 65), "images": (65, 85), "videos": (85, 98)}
+            labels = {"files": "LISTING FILES", "exact": "COMPARING FILES (SHA-256)", "text": "ANALYSING DOCUMENTS",
+                      "images": "ANALYSING IMAGES", "videos": "ANALYSING VIDEOS"}
 
-            exact_groups = []
-            if run_exact:
-                hash_to_files = defaultdict(list)
-                for idx, filepath in enumerate(discovered):
-                    live_file.markdown(f'<div class="scan-current-file">Currently analysing: {esc(filepath)}</div>', unsafe_allow_html=True)
-                    try:
-                        h = get_file_hash(filepath)
-                        hash_to_files[h].append(filepath)
-                    except Exception:
-                        pass
-                    pct = int((idx / max(len(discovered), 1)) * 40)
-                    bar.progress(pct, text=f"ANALYSING DOCUMENTS — {pct}%")
-                    status_box.markdown(
-                        f'<span class="stat-inline">Files discovered {len(discovered)} &nbsp;·&nbsp; '
-                        f'Files analysed {idx+1} &nbsp;·&nbsp; Exact matches so far {sum(1 for v in hash_to_files.values() if len(v)>1)}</span>',
-                        unsafe_allow_html=True
-                    )
-                exact_groups = [fs for fs in hash_to_files.values() if len(fs) > 1]
-            live_file.empty()
+            def _progress(stage, fraction, message):
+                if stage in weights:
+                    lo, hi = weights[stage]
+                    pct = int(lo + (hi - lo) * min(max(fraction, 0.0), 1.0))
+                    bar.progress(pct, text=f"{labels[stage]} - {pct}%")
+                    if message:
+                        live_file.markdown(f'<div class="scan-current-file">Currently analysing: {esc(message)}</div>', unsafe_allow_html=True)
 
-            text_pairs = []
-            if run_text:
-                bar.progress(58, text="ANALYSING DOCUMENTS — 58%")
-                text_pairs = find_near_duplicate_texts(folder)
-
-            bar.progress(75, text="ANALYSING IMAGES — 75%")
-            image_pairs = find_near_duplicate_images(folder)
-
-            bar.progress(90, text="ANALYSING VIDEOS — 90%")
-            video_pairs = find_near_duplicate_videos(folder)
-
+            result = run_scan(folder, run_exact=run_exact, run_text=run_text, progress=_progress)
             bar.progress(100, text="Analysis complete")
-            time.sleep(0.3)
+            live_file.empty()
+            time.sleep(0.2)
             bar.empty(); status_box.empty()
 
             st.session_state.update({
-                "all_files": discovered, "exact_groups": exact_groups,
-                "text_pairs": text_pairs, "image_pairs": image_pairs,
-                "video_pairs": video_pairs,
+                "all_files": result.files, "exact_groups": result.exact_groups,
+                "text_pairs": result.text_pairs, "image_pairs": result.image_pairs,
+                "video_pairs": result.video_pairs,
+                "scan_warnings": result.warnings, "empty_files": result.empty_files, "scan_timings": result.timings,
                 "scan_folder": folder, "scanned": True,
                 "last_scan_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "benchmark_rows": None,
             })
             save_scan_record()
             st.success(
-                f"Files discovered: {len(discovered)}  ·  Exact matches: {len(exact_groups)}  ·  "
-                f"Near matches: {len(text_pairs) + len(image_pairs) + len(video_pairs)}"
+                f"Files discovered: {len(result.files)}  ·  Exact matches: {len(result.exact_groups)}  ·  "
+                f"Near matches: {len(result.near_pairs)}  ·  Scan time: {result.scan_time:.1f} s"
             )
             st.session_state.page = "Overview"
             st.rerun()
@@ -1770,8 +1757,11 @@ def page_settings():
 
     with card("set_analysis"):
         card_title("Analysis settings")
-        st.write(f"**Default similarity threshold (documents):** {SIMILARITY_THRESHOLD*100:.0f}%")
-        st.write(f"**Image perceptual hash difference threshold:** {HASH_DIFFERENCE_THRESHOLD}")
+        st.write("**Exact duplicates:** SHA-256 of the file's bytes (files are only hashed when another file has the same size; empty files are ignored)")
+        st.write(f"**Document similarity threshold:** {SIMILARITY_THRESHOLD*100:.0f}% (Ratcliff/Obershelp ratio on the extracted text, character level)")
+        st.write(f"**Image perceptual hash (pHash) difference threshold:** {HASH_DIFFERENCE_THRESHOLD} of 64 bits")
+        st.write(f"**Video comparison:** {FRAMES_PER_VIDEO} frames per video, frame difference ≤ {FRAME_HASH_THRESHOLD}, "
+                 f"related when at least {MATCH_FRACTION_REQUIRED*100:.0f}% of the frames of each video match the other")
         st.write("**Supported document types:** DOCX, PDF, TXT")
         st.write("**Supported image types:** JPG, PNG, BMP, GIF")
         st.write("**Supported video types:** MP4, AVI, MOV, MKV, WMV (compared via sampled-frame perceptual hashing)")

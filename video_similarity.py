@@ -1,12 +1,16 @@
-import os
+"""Near-duplicate video detection: perceptual hashes of a few sampled frames."""
+import sys
+
 import cv2
 import imagehash
 from PIL import Image
 
+from file_utils import iter_files
+
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".wmv")
-FRAMES_PER_VIDEO = 5          # how many sample frames to extract per video
-FRAME_HASH_THRESHOLD = 4      # perceptual hash difference threshold, per frame
-MATCH_FRACTION_REQUIRED = 0.6  # fraction of frames that must match to call videos related
+FRAMES_PER_VIDEO = 5           # how many evenly spaced sample frames are taken from each video
+FRAME_HASH_THRESHOLD = 4       # maximum perceptual-hash (Hamming) distance for two frames to match
+MATCH_FRACTION_REQUIRED = 0.6  # fraction of EACH video's frames that must match the other video to call them related
 
 
 def is_video_file(filepath):
@@ -14,61 +18,59 @@ def is_video_file(filepath):
 
 
 def extract_sample_frame_hashes(filepath, num_frames=FRAMES_PER_VIDEO):
-    """Extract evenly-spaced frames from a video and return their
-    perceptual hashes. This lets us compare videos by their visual
-    content, not just their raw bytes."""
+    """Perceptual hashes of evenly spaced frames, so videos are compared by what they show, not by their bytes."""
     hashes = []
     cap = cv2.VideoCapture(filepath)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    if total_frames <= 0:
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames <= 0:
+            return hashes
+        positions = [int(total_frames * i / num_frames) for i in range(num_frames)]
+        for pos in positions:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+            success, frame = cap.read()
+            if success:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                hashes.append(imagehash.phash(Image.fromarray(rgb_frame)))
+    finally:
         cap.release()
-        return hashes
-
-    positions = [int(total_frames * i / num_frames) for i in range(num_frames)]
-
-    for pos in positions:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
-        success, frame = cap.read()
-        if success:
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(rgb_frame)
-            hashes.append(imagehash.phash(pil_image))
-
-    cap.release()
     return hashes
 
 
-def compare_videos(hashes_a, hashes_b):
-    """Compare two videos' sampled frame hashes. Returns a similarity
-    ratio (0-1) based on the fraction of frames that closely match."""
+def _directional_match(hashes_a, hashes_b):
+    """Fraction of A's frames that closely match at least one frame of B."""
     if not hashes_a or not hashes_b:
         return 0.0
-
-    matched = 0
-    for ha in hashes_a:
-        best_diff = min(ha - hb for hb in hashes_b)
-        if best_diff <= FRAME_HASH_THRESHOLD:
-            matched += 1
-
+    matched = sum(1 for ha in hashes_a if min(ha - hb for hb in hashes_b) <= FRAME_HASH_THRESHOLD)
     return matched / len(hashes_a)
 
 
-def find_near_duplicate_videos(folder):
-    """Find visually similar videos using sampled-frame perceptual hashing."""
-    video_hashes = {}
-    for root, dirs, files in os.walk(folder):
-        for filename in files:
-            filepath = os.path.join(root, filename)
-            if is_video_file(filepath):
-                try:
-                    hashes = extract_sample_frame_hashes(filepath)
-                    if hashes:
-                        video_hashes[filepath] = hashes
-                except Exception:
-                    continue
+def compare_videos(hashes_a, hashes_b):
+    """Similarity (0-1) of two videos: the SMALLER of the two directional match fractions. Both videos must
+    match the other, so the result does not depend on which file is listed first, and a short run of similar
+    frames (for example a shared dark intro) in an unrelated video does not make it a match."""
+    return min(_directional_match(hashes_a, hashes_b), _directional_match(hashes_b, hashes_a))
 
-    filepaths = list(video_hashes.keys())
+
+def find_near_duplicate_videos(folder, files=None, errors=None, progress=None):
+    """Find visually similar videos. Returns [(file_a, file_b, similarity 0-1), ...]."""
+    paths = files if files is not None else iter_files(folder)
+    video_hashes = {}
+    for filepath in paths:
+        if not is_video_file(filepath):
+            continue
+        try:
+            hashes = extract_sample_frame_hashes(filepath)
+        except Exception as e:
+            if errors is not None:
+                errors.append((filepath, f"could not read video: {type(e).__name__}: {e}"))
+            continue
+        if hashes:
+            video_hashes[filepath] = hashes
+        elif errors is not None:
+            errors.append((filepath, "no readable frames (unsupported codec or corrupt file); not compared"))
+
+    filepaths = list(video_hashes)
     pairs = []
     for i in range(len(filepaths)):
         for j in range(i + 1, len(filepaths)):
@@ -80,14 +82,11 @@ def find_near_duplicate_videos(folder):
 
 
 if __name__ == "__main__":
-    FOLDER_TO_SCAN = r"C:\Users\sagar\OneDrive\Documents\messy"
-    results = find_near_duplicate_videos(FOLDER_TO_SCAN)
-
+    folder = sys.argv[1] if len(sys.argv) > 1 else "."
+    results = find_near_duplicate_videos(folder)
     if not results:
         print("No near-duplicate videos found.")
     else:
         print(f"Found {len(results)} near-duplicate video pair(s):\n")
         for a, b, sim in results:
-            print(f"  {a}")
-            print(f"  <--> {b}")
-            print(f"  Matching frames: {sim * 100:.1f}%\n")
+            print(f"  {a}\n  <--> {b}\n  Matching frames: {sim * 100:.1f}%\n")

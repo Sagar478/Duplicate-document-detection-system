@@ -1,9 +1,10 @@
+import sys
 import time
 import os
+from file_utils import iter_files
 from hasher import get_file_hash
 from text_extractor import extract_text, is_text_file
 
-FOLDER_TO_SCAN = r"C:\Users\sagar\OneDrive\Documents\messy"
 
 
 def classify_size(size_kb):
@@ -16,12 +17,13 @@ def classify_size(size_kb):
 
 
 if __name__ == "__main__":
+    folder = sys.argv[1] if len(sys.argv) > 1 else "."
     print(f"{'File':<45} {'Size Category':<22} {'Hash (s)':<12} {'Extract (s)'}")
     print("-" * 100)
 
-    for root, dirs, files in os.walk(FOLDER_TO_SCAN):
-        for filename in files:
-            filepath = os.path.join(root, filename)
+    if True:
+        for filepath in iter_files(folder):
+            filename = os.path.basename(filepath)
             try:
                 size_kb = os.path.getsize(filepath) / 1024
                 category = classify_size(size_kb)

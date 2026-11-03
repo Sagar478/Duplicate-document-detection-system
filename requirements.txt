@@ -1,0 +1,14 @@
+streamlit>=1.40
+pandas
+plotly
+python-docx
+pdfplumber
+pillow
+imagehash
+numpy
+opencv-python
+google-api-python-client
+google-auth-oauthlib
+# tests only
+pytest
+reportlab
