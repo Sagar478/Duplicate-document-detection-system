@@ -43,3 +43,25 @@ version recommendation, the scanner, the Drive connector (with a fake Drive serv
 `app.py` dashboard · `scanner.py` shared scan pipeline · `hasher.py` · `text_extractor.py` · `near_duplicate_text.py` ·
 `image_similarity.py` · `video_similarity.py` · `version_recommender.py` · `google_drive_connector.py` · `file_utils.py` ·
 `benchmark.py` (timing by file size)
+
+
+## Online demo (Render) - each visitor signs in with their own Google account
+
+The same code can run as a hosted app. Set `DOCDETECT_ONLINE=1` and the dashboard shows only the Google Drive route: a visitor
+clicks **Sign in with Google**, chooses their own account, pastes a folder link, and DocDetect downloads that folder to a private
+temporary folder on the server, analyses it, and deletes it when the visitor clicks **Delete my files and sign out** (or after
+2 hours). Access is read-only. No token, `credentials.json`, scan history or download is kept on disk, and Local folder and
+Storage Comparison are hidden because they only make sense on the user's own computer.
+
+1. Google Cloud Console -> APIs & Services -> enable the **Google Drive API**.
+2. OAuth consent screen: user type *External*, publishing status **Testing**, and add each tester's Google address under
+   **Test users** (up to 100). Google shows an "unverified app" warning because `drive.readonly` is a restricted scope.
+3. Credentials -> **Create OAuth client ID -> Web application**. Under *Authorised redirect URIs* add the exact address of
+   the Render app (for example `https://docdetect.onrender.com`, no trailing slash).
+4. On Render: New -> Blueprint (or Web Service) from this repository (`render.yaml`). Set the environment variables
+   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `DOCDETECT_REDIRECT_URI` in the dashboard. Never commit them.
+5. Open the app, sign in with a test-user account and scan a small test folder. Files larger than
+   `DOCDETECT_MAX_DOWNLOAD_MB` (100 by default) are skipped because the free plan has little memory.
+
+Run it locally in online mode to try it: set the three variables and `DOCDETECT_ONLINE=1`, then `streamlit run app.py`
+(use `http://localhost:8501` as the redirect URI and add it to the OAuth client).

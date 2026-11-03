@@ -6,7 +6,7 @@ pdfplumber
 pillow
 imagehash
 numpy
-opencv-python
+opencv-python-headless
 google-api-python-client
 google-auth-oauthlib
 # tests only
