@@ -151,3 +151,40 @@ def test_local_mode_is_unchanged(monkeypatch, tmp_path):
     at.run()
     assert not at.exception
     assert [r for r in at.radio if r.label == "Source"]
+
+
+def test_videos_page_online_shows_still_frames_not_whole_videos(online_env, tmp_path):
+    """st.video keeps the whole file in the server's memory; on the 512 MB hosted server that caused a crash."""
+    from scanner import run_scan
+    from test_app import state_from
+    from test_media import write_video
+    work = tmp_path / "vids"
+    work.mkdir()
+    write_video(work / "clip.mp4", seed=1)
+    write_video(work / "other.mp4", seed=2)
+    at = AppTest.from_file(APP, default_timeout=60)
+    for k, v in state_from(run_scan(str(work))).items():
+        at.session_state[k] = v
+    at.session_state["page"] = "Videos"
+    at.run()
+    assert not at.exception, [e.value[:300] for e in at.exception]
+    assert not at.get("video")
+    assert len(at.get("image")) == 2
+
+
+def test_videos_page_local_still_plays_videos(monkeypatch, tmp_path):
+    from scanner import run_scan
+    from test_app import state_from
+    from test_media import write_video
+    monkeypatch.delenv("DOCDETECT_ONLINE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    work = tmp_path / "vids"
+    work.mkdir()
+    write_video(work / "clip.mp4", seed=1)
+    at = AppTest.from_file(APP, default_timeout=60)
+    for k, v in state_from(run_scan(str(work))).items():
+        at.session_state[k] = v
+    at.session_state["page"] = "Videos"
+    at.run()
+    assert not at.exception, [e.value[:300] for e in at.exception]
+    assert len(at.get("video")) == 1

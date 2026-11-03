@@ -205,6 +205,25 @@ def card(key):
         return st.container(border=True)
 
 
+def video_still(path, width=320):
+    """One small RGB frame from the middle of a video, or None if it cannot be read."""
+    import cv2
+    cap = cv2.VideoCapture(path)
+    try:
+        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if count > 1:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, count // 2)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            return None
+        h, w = frame.shape[:2]
+        if w > width:
+            frame = cv2.resize(frame, (width, max(1, int(h * width / w))))
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    finally:
+        cap.release()
+
+
 def safe_text(path):
     """Text of a document, or '' if it cannot be read (the comparison views must never crash on one bad file)."""
     try:
@@ -1272,7 +1291,16 @@ def page_videos():
             sim_str = f" · {sim_val:.0f}% frame match" if sim_val is not None else ""
             st.caption(f"{fmt_size(size_kb)} · {status}{sim_str}")
             try:
-                st.video(f)
+                if ONLINE:
+                    # st.video keeps the whole file in the server's memory, which crashed the small hosted server.
+                    # Online, show one still frame instead.
+                    frame = video_still(f)
+                    if frame is None:
+                        st.caption("(preview unavailable)")
+                    else:
+                        st.image(frame, width=320, caption="Still frame (video playback is turned off in the online demo)")
+                else:
+                    st.video(f)
             except Exception:
                 st.warning("Preview unavailable for this file (often due to very large file size or an unsupported codec). Detection results above are unaffected.")
 
@@ -1881,4 +1909,4 @@ PAGES = {
     "Analytics": page_analytics, "Optimization": page_optimization, "Accuracy": page_accuracy,
     "Performance": page_performance, "Scan History": page_history, "Settings": page_settings,
 }
-PAGES.get(st.session_state.page, page_overview)()
+PAGES.get(st.session_state.page, page_overview)()
