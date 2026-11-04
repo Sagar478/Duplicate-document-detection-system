@@ -4,6 +4,13 @@ DocDetect finds **exact** and **near-duplicate** files (documents, images, video
 Google Drive folder, recommends which file is the most likely current version, and shows the results in a Streamlit
 dashboard. All analysis runs on your own computer.
 
+> **For markers:** run it locally as described in *Install and run*. Locally there is **no file size limit** and all
+> features (local folders, Google Drive, Storage Comparison, video playback) are available. The 100 MB limit and the
+> other restrictions described under *Online demo* apply only to the hosted demo used for user testing.
+>
+> **Versions:** tag `v1.0-evaluation` is the code that produced the evaluation results in the thesis;
+> tag `v1.1-online` adds the hosted demo (per-visitor Google sign-in) and two memory fixes found during deployment.
+
 ## How it works
 
 | Step | Method |
@@ -61,7 +68,9 @@ Storage Comparison are hidden because they only make sense on the user's own com
 4. On Render: New -> Blueprint (or Web Service) from this repository (`render.yaml`). Set the environment variables
    `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `DOCDETECT_REDIRECT_URI` in the dashboard. Never commit them.
 5. Open the app, sign in with a test-user account and scan a small test folder. Files larger than
-   `DOCDETECT_MAX_DOWNLOAD_MB` (100 by default) are skipped because the free plan has little memory.
+   `DOCDETECT_MAX_DOWNLOAD_MB` (set to 100 in `render.yaml`) are skipped because the free plan has 512 MB of memory.
+   In online mode the Videos page also shows one still frame per video instead of a player, for the same reason.
+   This limit does not apply when the app is run locally.
 
 Run it locally in online mode to try it: set the three variables and `DOCDETECT_ONLINE=1`, then `streamlit run app.py`
 (use `http://localhost:8501` as the redirect URI and add it to the OAuth client).
