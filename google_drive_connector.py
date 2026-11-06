@@ -157,15 +157,18 @@ def _prepare_download_dir(local_download_dir):
 
 
 def sync_drive_folder_to_local(folder_id, local_download_dir, owner_email_filter=None,
-                               max_size_mb=None, progress_callback=None, service=None):
+                               max_size_mb=None, progress_callback=None, service=None, report=None):
     """Download the files of a Drive folder to a local folder and return their local paths.
 
-    max_size_mb: files larger than this are skipped (None = no limit); they are listed in LAST_SKIPPED.
+    max_size_mb: files larger than this are skipped (None = no limit); they are listed in LAST_SKIPPED and in report["skipped"].
     progress_callback(index, total, file_name, fraction): called while downloading, so the app can show progress.
-    Subfolders and native Google Docs/Sheets/Slides are not downloaded; they are listed in LAST_NOT_DOWNLOADED.
+    Subfolders and native Google Docs/Sheets/Slides are not downloaded; they are listed in LAST_NOT_DOWNLOADED and in report["not_downloaded"].
     """
     global LAST_SKIPPED, LAST_NOT_DOWNLOADED
-    LAST_SKIPPED, LAST_NOT_DOWNLOADED = [], []
+    skipped, not_downloaded = [], []    # this call's own lists, so two visitors never share them
+    LAST_SKIPPED, LAST_NOT_DOWNLOADED = skipped, not_downloaded
+    if report is not None:
+        report["skipped"], report["not_downloaded"] = skipped, not_downloaded
     folder_id = extract_folder_id(folder_id)
 
     _prepare_download_dir(local_download_dir)
@@ -187,9 +190,9 @@ def sync_drive_folder_to_local(folder_id, local_download_dir, owner_email_filter
     for f in files:
         mime = f.get("mimeType", "")
         if mime == "application/vnd.google-apps.folder":
-            LAST_NOT_DOWNLOADED.append((f["name"], "subfolder (only the top level of the folder is downloaded)"))
+            not_downloaded.append((f["name"], "subfolder (only the top level of the folder is downloaded)"))
         elif mime.startswith("application/vnd.google-apps"):
-            LAST_NOT_DOWNLOADED.append((f["name"], "Google Docs/Sheets/Slides file (needs an export)"))
+            not_downloaded.append((f["name"], "Google Docs/Sheets/Slides file (needs an export)"))
         else:
             downloadable.append(f)
 
@@ -197,7 +200,7 @@ def sync_drive_folder_to_local(folder_id, local_download_dir, owner_email_filter
     for f in downloadable:
         size_bytes = int(f.get("size", 0) or 0)
         if max_size_mb and size_bytes > max_size_mb * 1024 * 1024:
-            LAST_SKIPPED.append((f["name"], size_bytes))
+            skipped.append((f["name"], size_bytes))
         else:
             to_download.append(f)
 
@@ -234,9 +237,9 @@ def is_online():
 
 def max_online_download_mb():
     try:
-        return max(1, int(os.environ.get("DOCDETECT_MAX_DOWNLOAD_MB", "200")))
+        return max(1, int(os.environ.get("DOCDETECT_MAX_DOWNLOAD_MB", "100")))
     except ValueError:
-        return 200
+        return 100
 
 
 def web_login_configured():

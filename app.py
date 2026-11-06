@@ -978,6 +978,9 @@ def page_scan():
                 "Files will be downloaded locally before analysis, since detection runs on local files."
             )
             drive_folder_id = extract_folder_id(st.text_input("Google Drive folder ID or link", value=""))
+            if st.session_state.get("drive_owners_folder") != drive_folder_id:
+                st.session_state["drive_owners"] = {}
+                st.session_state["drive_owners_folder"] = drive_folder_id
             folder = st.session_state["drive_dir"] if ONLINE else os.path.join(os.getcwd(), "drive_downloads")
             owner_filter = None
             can_connect = bool(drive_folder_id) and (not ONLINE or drive_service is not None)
@@ -1009,7 +1012,6 @@ def page_scan():
 
             if can_connect and st.button("⬇ Download from Drive" if ONLINE else "⬇ Connect and download from Drive"):
                 import time as _t
-                import google_drive_connector as _gdc
                 bar = st.progress(0.0, text="Connecting to Google Drive...")
                 t0 = _t.time()
 
@@ -1018,10 +1020,11 @@ def page_scan():
                     bar.progress(min(overall, 1.0), text=f"Downloading file {i + 1} of {total}: {name} ({frac * 100:.0f}%)")
 
                 try:
+                    report = {}
                     downloaded = sync_drive_folder_to_local(
                         drive_folder_id, folder, owner_email_filter=owner_filter,
                         max_size_mb=int(limit_mb) if use_limit else None,
-                        progress_callback=_progress, service=drive_service)
+                        progress_callback=_progress, service=drive_service, report=report)
                     bar.progress(1.0, text="Download complete")
                     st.session_state.scanned = False
                     st.session_state.all_files = []
@@ -1032,10 +1035,10 @@ def page_scan():
                     who = owner_filter if owner_filter else "all contributors"
                     secs = _t.time() - t0
                     st.success(f"Downloaded {len(downloaded)} file(s) from {who} in {secs:.1f} s. Click START ANALYSIS to scan them.")
-                    not_downloaded = getattr(_gdc, "LAST_NOT_DOWNLOADED", [])
+                    not_downloaded = report.get("not_downloaded", [])
                     if not_downloaded:
                         st.info("Not downloaded: " + "; ".join(f"{n} ({why})" for n, why in not_downloaded))
-                    skipped = getattr(_gdc, "LAST_SKIPPED", [])
+                    skipped = report.get("skipped", [])
                     if skipped:
                         st.warning("Skipped (larger than the limit): " + ", ".join(
                             f"{n} ({sz / 1024 / 1024:.0f} MB)" for n, sz in skipped))
@@ -1052,7 +1055,7 @@ def page_scan():
         st.markdown("**Analysis Options**")
         c1, c2, c3, c4 = st.columns(4)
         run_exact = c1.checkbox("Exact duplicates", value=True)
-        run_text = c2.checkbox("Near-duplicates", value=True)
+        run_text = c2.checkbox("Near-duplicate documents", value=True)
         c3.checkbox("Content similarity", value=True, disabled=True, help="Included automatically as part of near-duplicate detection")
         c4.checkbox("Version recommendation", value=True, disabled=True, help="Always applied to any detected duplicate group")
 

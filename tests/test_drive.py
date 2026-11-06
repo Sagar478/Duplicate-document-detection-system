@@ -75,6 +75,26 @@ def test_sync_keeps_same_named_files_sets_dates_and_reports_skips(tmp_path, fake
     assert {n for n, _ in gdc.LAST_NOT_DOWNLOADED} == {"Sheet", "Sub"}
 
 
+def test_sync_report_gives_each_call_its_own_lists(tmp_path, fake_download):
+    """Hosted mode: two visitors syncing at the same time must not see each other's skipped files."""
+    items, contents = make_items()
+    first, second = {}, {}
+    gdc.sync_drive_folder_to_local("f", str(tmp_path / "a" / "drive_downloads"), max_size_mb=500,
+                                   service=FakeService(items, contents), report=first)
+    gdc.sync_drive_folder_to_local("f", str(tmp_path / "b" / "drive_downloads"), max_size_mb=None,
+                                   service=FakeService(items, contents), report=second)
+    assert first["skipped"] == [("Huge.mp4", 2000 * 1024 * 1024)]
+    assert second["skipped"] == []
+    assert {n for n, _ in first["not_downloaded"]} == {"Sheet", "Sub"}
+
+
+def test_online_download_limit_defaults_to_100_mb(monkeypatch):
+    monkeypatch.delenv("DOCDETECT_MAX_DOWNLOAD_MB", raising=False)
+    assert gdc.max_online_download_mb() == 100
+    monkeypatch.setenv("DOCDETECT_MAX_DOWNLOAD_MB", "250")
+    assert gdc.max_online_download_mb() == 250
+
+
 def test_owner_filter(tmp_path, fake_download):
     items, contents = make_items()
     paths = gdc.sync_drive_folder_to_local("f", str(tmp_path / "drive_downloads"), owner_email_filter="b@x.com",

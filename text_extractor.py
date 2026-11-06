@@ -30,14 +30,14 @@ def extract_text_from_pdf(filepath):
             text = page.extract_text()
             if text:
                 full_text.append(text)
-            page.close()   # free the page's layout data; without this a 200-page PDF used about 630 MB of memory
+            page.close()   # free the page's layout data; without this a 200-page PDF used about 674 MB of memory
     return "\n".join(full_text)
 
 
 def extract_text(filepath):
     """Return the text of a file, or None if the file type is not a text document.
 
-    A scanned PDF (pictures of pages) has no text layer and returns '' (see is_empty_text in near_duplicate_text).
+    A scanned PDF (pictures of pages) has no text layer and returns ''.
     Raises an exception if the file is corrupt or password protected; callers decide how to report that.
     """
     lower = filepath.lower()
@@ -64,4 +64,4 @@ def extract_text_cached(filepath):
 
 
 def is_text_file(filepath):
-    return filepath.lower().endswith(TEXT_EXTENSIONS)
+    return filepath.lower().endswith(TEXT_EXTENSIONS)

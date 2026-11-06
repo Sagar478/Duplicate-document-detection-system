@@ -1,0 +1,19 @@
+Team Meeting Minutes - Project Kickoff
+
+Date: 10 March 2026
+Attendees: Alice, Ben, Carla, David
+
+Agenda:
+1. Project scope review
+2. Timeline discussion
+3. Task assignments
+
+Decisions:
+- The project will use a phased rollout approach.
+- Weekly check-ins scheduled for every Monday at 10am.
+- Ben will lead the backend development.
+- Carla will handle UI/UX design.
+
+Action Items:
+- Alice to finalize requirements document by Friday.
+- David to set up the project repository.

@@ -1,0 +1,6 @@
+file_a,file_b,relation
+Meeting_Minutes.txt,Meeting_Minutes_copy.txt,exact copy
+Marketing_Plan_v1.txt,Marketing_Plan_v2.txt,edited version
+Marketing_Plan_v2.txt,Marketing_Plan_FINAL.txt,edited version
+Marketing_Plan_v1.txt,Marketing_Plan_FINAL.txt,edited version
+Status_Report_v1.docx,Status_Report_v2.docx,edited version
